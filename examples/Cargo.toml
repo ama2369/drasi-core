@@ -34,3 +34,7 @@ path = "temperature.rs"
 [[example]]
 name = "process_monitor"
 path = "process_monitor.rs"
+
+[[example]]
+name = "my_test"
+path = "my_test.rs"
