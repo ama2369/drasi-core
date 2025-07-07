@@ -19,7 +19,7 @@ mod query_builder;
 
 pub use auto_future_queue_consumer::AutoFutureQueueConsumer;
 pub use continuous_query::ContinuousQuery;
-pub use query_builder::QueryBuilder;
+pub use query_builder::{QueryBuilder, QueryParserType};
 
 #[cfg(test)]
 mod tests;

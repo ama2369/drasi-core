@@ -13,6 +13,7 @@ readme = "../readme.md"
 
 [dependencies]
 drasi-query-ast = { path = "../query-ast" }
+drasi-query-cypher = { path = "../query-cypher" }
 peg = "0.8.1"
 serde = "1.0.164"
 serde_json = "1.0.96"

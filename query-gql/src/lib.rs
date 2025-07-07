@@ -48,6 +48,7 @@ peg::parser! {
         rule kw_exists()    = ("EXISTS" / "exists")
         rule kw_group()     = ("GROUP" / "group")
         rule kw_by()        = ("BY" / "by")
+        rule kw_let()       = ("LET" / "let")
 
         rule _()
             = quiet!{[' ']}
@@ -197,6 +198,15 @@ peg::parser! {
 
         rule else_expression() -> Expression
             = kw_else() __+ else_:expression() __+ { else_ }
+
+        rule let_assign() -> (Arc<str>, Expression)
+            = name:ident() __* "=" __* expr:expression() { (name, expr) }
+        
+        rule let_statement() -> Vec<(Arc<str>,Expression)>
+            = kw_let() __+
+            assigns:(let_assign() ** (__* "," __*))
+            __*
+            { assigns }
 
             #[cache_left_rec]
         pub rule expression() -> Expression
@@ -365,39 +375,30 @@ peg::parser! {
         // e.g. 'RETURN a, b'
         rule return_clause() -> Vec<Expression>
             = kw_return() __+ items:( projection_expression() ++ (__* "," __*) ) { items }
-        
+
         rule group_by_clause() -> Vec<Expression>
             = kw_group() __+ kw_by() __+ "(" __* ")" { Vec::new() }  // Handle GROUP BY ()
             / kw_group() __+ kw_by() __+ items:( expression() ++ (__* "," __*) ) { items }
 
         rule with_or_return() -> Vec<Expression>
             = r:return_clause() { r }
-        
+
         rule part(config: &dyn GQLConfiguration) -> Vec<QueryPart>
-            = match_clauses:( __* m:(match_clause() ** (__+) )? { m.unwrap_or_else(Vec::new).into_iter().flatten().collect() } )
-            where_clauses:( __* w:(where_clause() ** (__+) )? { w.unwrap_or_else(Vec::new) } )
-            return_clause:( with_or_return() )
-            group_by_exprs:( __* g:group_by_clause()? { g } )
+            = match_clauses:( __* m:(match_clause() ** (__+) )? { m.unwrap_or_default().into_iter().flatten().collect() } )
+              where_clauses:( __* w:(where_clause() ** (__+) )? { w.unwrap_or_default() } )
+              let_statements:( ls:let_statement() __* { ls } )*
+              return_clause:(with_or_return())
+              group_by_exprs:( __* g:group_by_clause()? { g } )
               __*
               {
-                match group_by_exprs {
-                    // Explicit GROUP BY
-                    Some(keys) => handle_explicit_group_by(
-                        match_clauses,
-                        where_clauses,
-                        return_clause,
-                        keys,
-                        config,
-                    ),
-                    // No GROUP BY
-                    None => vec![
-                        QueryPart {
-                            match_clauses,
-                            where_clauses,
-                            return_clause: return_clause.into_projection_clause(config),
-                        }
-                    ],
-                }
+                build_query_parts(
+                    match_clauses,
+                    where_clauses,
+                    let_statements,
+                    return_clause,
+                    group_by_exprs,
+                    config,
+                )
               }
 
         pub rule query(config: &dyn GQLConfiguration) -> Query
@@ -408,7 +409,7 @@ peg::parser! {
                     parts,
                 }
             }
-            
+
     }
 }
 
@@ -425,6 +426,126 @@ pub fn parse_expression(input: &str) -> Result<ast::Expression, ParseError<LineC
 
 pub trait GQLConfiguration: Send + Sync {
     fn get_aggregating_function_names(&self) -> HashSet<String>;
+}
+
+fn build_query_parts(
+    match_clauses: Vec<MatchClause>,
+    where_clauses: Vec<Expression>,
+    let_statements: Vec<Vec<(Arc<str>, Expression)>>,
+    return_clause: Vec<Expression>,
+    group_by_exprs: Option<Vec<Expression>>,
+    config: &dyn GQLConfiguration,
+) -> Vec<QueryPart> {
+    if !let_statements.is_empty() {
+        desugar_lets(
+            match_clauses,
+            where_clauses,
+            let_statements,
+            return_clause,
+            group_by_exprs,
+            config,
+        )
+    } else {
+        // <existing logic for no-LET case>
+        match group_by_exprs {
+            Some(keys) => handle_explicit_group_by(
+                match_clauses,
+                where_clauses,
+                return_clause,
+                keys,
+                config,
+            ),
+            None => vec![QueryPart {
+                match_clauses,
+                where_clauses,
+                return_clause: return_clause.into_projection_clause(config),
+            }],
+        }
+    }
+}
+
+fn extract_scope_names(match_clauses: &[MatchClause]) -> Vec<Arc<str>> {
+    let mut names = Vec::new();
+    for clause in match_clauses {
+        // node variable on the left
+        if let Some(name) = &clause.start.annotation.name {
+            names.push(name.clone());
+        }
+        // any node variables in the path
+        for (_rel, node) in &clause.path {
+            if let Some(name) = &node.annotation.name {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
+// 2) Desugar all the LET clauses into a series of WITH‐style QueryParts
+fn desugar_lets(
+    match_clauses: Vec<MatchClause>,
+    where_clauses: Vec<Expression>,
+    let_stmts: Vec<Vec<(Arc<str>, Expression)>>,
+    final_return: Vec<Expression>,
+    group_by_exprs: Option<Vec<Expression>>,
+    config: &dyn GQLConfiguration,
+) -> Vec<QueryPart> {
+    let mut parts = Vec::new();
+
+    // start with the names bound by MATCH
+    let mut scope_names = extract_scope_names(&match_clauses);
+
+    // for each LET clause…
+    for (i, assigns) in let_stmts.into_iter().enumerate() {
+        // build the projection list: every name so far, plus each `expr AS alias`
+        let mut projections: Vec<Expression> =
+            scope_names.iter().map(|n| UnaryExpression::ident(n)).collect();
+        for (alias, expr) in &assigns {
+            projections.push(UnaryExpression::alias(expr.clone(), alias.clone()));
+        }
+
+        // first LET needs the MATCH+WHERE; later ones are pure WITH
+        let (m, w) = if i == 0 {
+            (match_clauses.clone(), where_clauses.clone())
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        parts.push(QueryPart {
+            match_clauses: m,
+            where_clauses: w,
+            return_clause: ProjectionClause::Item(projections.clone()),
+        });
+
+        // update scope: now we also have each new alias as a column name
+        for (alias, _) in assigns {
+            scope_names.push(alias);
+        }
+    }
+
+    // finally, emit the real RETURN (or GROUP BY) against the working table
+    match group_by_exprs {
+        Some(keys) => {
+            // reuse existing grouping logic, but on an already‐projected table
+            let group_parts = handle_explicit_group_by(
+                Vec::new(),            // match_clauses
+                Vec::new(),            // where_clauses
+                final_return,
+                keys,
+                config,
+            );
+            parts.extend(group_parts);
+        }
+        None => {
+            parts.push(QueryPart {
+                match_clauses: Vec::new(),
+                where_clauses: Vec::new(),
+                return_clause: final_return.into_projection_clause(config),
+            });
+        }
+    }
+
+    parts
 }
 
 fn handle_explicit_group_by(
@@ -525,7 +646,6 @@ fn two_step_parts(
         ProjectionClause::GroupBy { grouping: grouping.clone(), aggregates: aggregates.clone() }
     };
 
-   
     let stage1 = QueryPart {
         match_clauses: match_clauses.clone(),
         where_clauses: where_clauses.clone(),

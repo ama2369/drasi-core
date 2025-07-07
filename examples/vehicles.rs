@@ -18,27 +18,33 @@ use std::sync::Arc;
 
 use drasi_core::{
     models::{Element, ElementMetadata, ElementPropertyMap, ElementReference, SourceChange},
-    query::QueryBuilder,
+    query::{QueryBuilder, QueryParserType},
 };
 use serde_json::json;
+
 
 #[allow(clippy::print_stdout, clippy::unwrap_used)]
 #[tokio::main]
 async fn main() {
     let query_str = "
-    MATCH 
-        (v:Vehicle)-[:LOCATED_IN]->(:Zone {type:'Parking Lot'}) 
-    RETURN 
-        v.color AS color, 
-        v.plate AS plate";
+    MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+    WITH z.type AS zone_type, v.color = 'Red' AS isRed, count(v) AS vehicle_count
+    RETURN zone_type, isRed, vehicle_count
+        ";
 
-    let query_builder = QueryBuilder::new(query_str);
+   let query_builder = QueryBuilder::new(query_str);
+    //let query_builder = QueryBuilder::new(query_str).with_query_parser(QueryParserType::GQL);
     let query = query_builder.build().await;
+    println!("Query: {:#?}", query);
 
+    println!("\n=== Setting up initial data ===");
     for source_change in get_initial_data() {
         _ = query.process_source_change(source_change).await;
     }
+    println!("Initial data loaded: 2 vehicles (Blue and Red) and 1 zone (Parking Lot)");
 
+    println!("\n=== Change 1: Creating location relationship ===");
+    println!("Creating LOCATED_IN relationship: Vehicle v1 (Blue) -> Zone z1 (Parking Lot)");
     println!(
         "Result: {:?}",
         query
@@ -58,6 +64,8 @@ async fn main() {
             .unwrap()
     );
 
+    println!("\n=== Change 2: Updating vehicle properties ===");
+    println!("Updating Vehicle v1: Changing color from 'Blue' to 'Green'");
     println!(
         "Result: {:?}",
         query
@@ -78,13 +86,15 @@ async fn main() {
             .unwrap()
     );
 
+    println!("\n=== Change 3: Deleting relationship ===");
+    println!("Deleting LOCATED_IN relationship: Vehicle v1 -> Zone z1");
     println!(
         "Result: {:?}",
         query
             .process_source_change(SourceChange::Delete {
                 metadata: ElementMetadata {
                     reference: ElementReference::new("", "v1-location"),
-                    labels: Arc::new([Arc::from("LOCATED_AT")]),
+                    labels: Arc::new([Arc::from("LOCATED_IN")]),
                     effective_from: 0,
                 },
             })
@@ -95,6 +105,7 @@ async fn main() {
 
 fn get_initial_data() -> Vec<SourceChange> {
     vec![
+        // Vehicle v1: Blue vehicle with plate AAA-1234
         SourceChange::Insert {
             element: Element::Node {
                 metadata: ElementMetadata {
@@ -108,6 +119,7 @@ fn get_initial_data() -> Vec<SourceChange> {
                 })),
             },
         },
+        // Vehicle v2: Red vehicle with plate ZZZ-7890
         SourceChange::Insert {
             element: Element::Node {
                 metadata: ElementMetadata {
@@ -121,6 +133,7 @@ fn get_initial_data() -> Vec<SourceChange> {
                 })),
             },
         },
+        // Zone z1: Parking Lot zone
         SourceChange::Insert {
             element: Element::Node {
                 metadata: ElementMetadata {
