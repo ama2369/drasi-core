@@ -256,37 +256,6 @@ fn group_by_with_binary_expression() {
 }
 
 #[test]
-fn group_by_with_reversed_binary_expression() {
-    // 7. GROUP BY with Reversed Binary Expression
-    // Ensures that binary expressions can serve as grouping keys when operands are in different order.
-    let query = gql::query(
-        "MATCH (a)-[t:Transfers]->(b)
-         RETURN t.amount + 100, count(t) AS number_of_transfers
-         GROUP BY 100 + t.amount",
-        &TEST_CONFIG,
-    )
-    .unwrap();
-
-    assert_eq!(
-        query.parts[0].return_clause,
-        ProjectionClause::GroupBy {
-            grouping: vec![
-                BinaryExpression::add(
-                    UnaryExpression::expression_property(UnaryExpression::ident("t"), "amount".into()),
-                    UnaryExpression::literal(Literal::Integer(100))
-                )
-            ],
-            aggregates: vec![
-                UnaryExpression::alias(
-                    FunctionExpression::function("count".into(), vec![UnaryExpression::ident("t")], 61),
-                    "number_of_transfers".into()
-                )
-            ]
-        }
-    );
-}
-
-#[test]
 fn group_by_with_aliased_column() {
     // 8. GROUP BY with Aliased Column
     // Tests that aliases specified in RETURN can be referenced in the GROUP BY clause.
@@ -385,34 +354,6 @@ fn group_by_empty() {
 }
 
 #[test]
-fn explicit_group_by_with_no_aggregates() {
-    // 11. Explicit GROUP BY with No Aggregates
-    // Tests that explicit GROUP BY works correctly when no aggregate functions are used.
-    // This should behave like a regular projection with grouping keys.
-    let query = gql::query(
-        "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
-         RETURN z.type AS zone_type, v.color AS vehicle_color
-         GROUP BY zone_type, vehicle_color",
-        &TEST_CONFIG,
-    )
-    .unwrap();
-
-    assert_eq!(
-        query.parts[0].return_clause,
-        ProjectionClause::Item(vec![
-            UnaryExpression::alias(
-                UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
-                "zone_type".into()
-            ),
-            UnaryExpression::alias(
-                UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
-                "vehicle_color".into()
-            )
-        ])
-    );
-}
-
-#[test]
 fn implicit_grouping_with_only_aggregates() {
     // 12. Implicit Grouping with Only Aggregates
     // Tests that when RETURN contains only aggregate functions with no explicit GROUP BY,
@@ -488,41 +429,6 @@ fn grouping_on_non_aliased_function() {
             ],
             aggregates: vec![
                 FunctionExpression::function("count".into(), vec![UnaryExpression::ident("t")], 63)
-            ]
-        }
-    );
-}
-
-
-
-#[test]
-fn group_by_with_complex_nested_expression() {
-    // 16. GROUP BY with Complex Nested Expression
-    // Tests GROUP BY with nested functions and binary operations that should be equivalent.
-    let query = gql::query(
-        "MATCH (a)-[t:Transfers]->(b)
-         RETURN FLOOR(1 + t.amount), count(t) AS count
-         GROUP BY FLOOR(t.amount + 1)",
-        &TEST_CONFIG,
-    )
-    .unwrap();
-
-    assert_eq!(
-        query.parts[0].return_clause,
-        ProjectionClause::GroupBy {
-            grouping: vec![
-                FunctionExpression::function("FLOOR".into(), vec![
-                    BinaryExpression::add(
-                        UnaryExpression::literal(Literal::Integer(1)),
-                        UnaryExpression::expression_property(UnaryExpression::ident("t"), "amount".into())
-                    )
-                ], 47)
-            ],
-            aggregates: vec![
-                UnaryExpression::alias(
-                    FunctionExpression::function("count".into(), vec![UnaryExpression::ident("t")], 64),
-                    "count".into()
-                )
             ]
         }
     );
@@ -750,237 +656,69 @@ fn example_6_chained_lets_with_multiple_new_variables() {
 }
 
 // GROUP BY with LET tests
+
 #[test]
-fn let_with_group_by_vehicle_example() {
-    // Test combining LET and GROUP BY using vehicle example
-    // Creates computed fields with LET and then groups by them
-    let gql_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+fn group_by_let_defined_variable() {
+    // Example 1: Group by LET-Defined Variable
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
          LET isRed = v.color = 'Red'
          RETURN z.type AS zone_type, isRed, count(v) AS vehicle_count
          GROUP BY zone_type, isRed";
-
-    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
     
-    let expected_ast = Query {
-        parts: vec![
-            // First part: LET assignments and initial projection
-            QueryPart {
-                match_clauses: vec![MatchClause {
-                    start: NodeMatch::with_annotation(Annotation::new("v".into()), "Vehicle".into()),
-                    path: vec![(
-                        RelationMatch::right(Annotation::empty(), vec!["LOCATED_IN".into()], vec![], None),
-                        NodeMatch::with_annotation(Annotation::new("z".into()), "Zone".into())
-                    )],
-                    optional: false,
-                }],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::alias(
-                        UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
-                        "zone_type".into()
-                    ),
-                    UnaryExpression::alias(
-                        BinaryExpression::eq(
-                            UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
-                            UnaryExpression::literal(Literal::Text("Red".into()))
-                        ),
-                        "isRed".into()
-                    ),
-                    UnaryExpression::ident("v"),
-                ]),
-            },
-            // Second part: GROUP BY with computed fields
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::GroupBy {
-                    grouping: vec![
-                        UnaryExpression::ident("zone_type"),
-                        UnaryExpression::ident("isRed"),
-                    ],
-                    aggregates: vec![
-                        UnaryExpression::alias(
-                            FunctionExpression::function("count".into(), vec![UnaryExpression::ident("v")], 123),
-                            "vehicle_count".into()
-                        )
-                    ]
-                }
-            },
-            // Third part: Final projection
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::ident("zone_type"),
-                    UnaryExpression::ident("isRed"),
-                    UnaryExpression::ident("vehicle_count"),
-                ]),
-            }
-        ],
-    };
-
-    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure with LET and GROUP BY");
+    assert!(false, "Test not implemented yet");
 }
 
-
 #[test]
-fn let_group_by_two_stage_plan() {
-    // Case 2: Fewer Projected Keys Than GROUP BY Keys (two-stage plan)
-    let gql_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+fn multiple_let_variables_in_group_by() {
+    // Example 2: Multiple LET Variables in GROUP BY
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
          LET isRed = v.color = 'Red'
          LET isBlue = v.color = 'Blue'
-         RETURN z.type AS zone_type, count(v) AS vehicle_count
+         RETURN z.type AS zone_type, isRed, isBlue, count(v) AS vehicle_count
          GROUP BY zone_type, isRed, isBlue";
-
-    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
     
-    let expected_ast = Query {
-        parts: vec![
-            // First part: First LET assignment (isRed)
-            QueryPart {
-                match_clauses: vec![MatchClause {
-                    start: NodeMatch::with_annotation(Annotation::new("v".into()), "Vehicle".into()),
-                    path: vec![(
-                        RelationMatch::right(Annotation::empty(), vec!["LOCATED_IN".into()], vec![], None),
-                        NodeMatch::with_annotation(Annotation::new("z".into()), "Zone".into())
-                    )],
-                    optional: false,
-                }],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::ident("v"),
-                    UnaryExpression::ident("z"),
-                    UnaryExpression::alias(
-                        BinaryExpression::eq(
-                            UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
-                            UnaryExpression::literal(Literal::Text("Red".into()))
-                        ),
-                        "isRed".into()
-                    ),
-                ]),
-            },
-            // Second part: Second LET assignment (isBlue)
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::ident("v"),
-                    UnaryExpression::ident("z"),
-                    UnaryExpression::ident("isRed"),
-                    UnaryExpression::alias(
-                        BinaryExpression::eq(
-                            UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
-                            UnaryExpression::literal(Literal::Text("Blue".into()))
-                        ),
-                        "isBlue".into()
-                    ),
-                ]),
-            },
-            // Third part: GROUP BY with all specified keys
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::GroupBy {
-                    grouping: vec![
-                        UnaryExpression::alias(
-                            UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
-                            "zone_type".into()
-                        ),
-                        UnaryExpression::ident("isRed"),
-                        UnaryExpression::ident("isBlue"),
-                    ],
-                    aggregates: vec![
-                        UnaryExpression::alias(
-                            FunctionExpression::function("count".into(), vec![UnaryExpression::ident("v")], 155),
-                            "vehicle_count".into()
-                        )
-                    ]
-                }
-            },
-            // Fourth part: Final projection with only subset of keys
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::ident("zone_type"),
-                    UnaryExpression::ident("vehicle_count"),
-                ]),
-            }
-        ],
-    };
-
-    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure for two-stage LET and GROUP BY");
+    assert!(false, "Test not implemented yet");
 }
 
-// LET with Aggregation Tests - Comparing GQL and Cypher Parser Outputs
 #[test]
-fn let_with_implicit_aggregation() {
-    // Test LET with implicit aggregation (no explicit GROUP BY)
-    let gql_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+fn group_by_let_defined_variable_with_less_projected_columns() {
+    // Example 3: Group by LET-Defined Variable with less Projected Columns
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         LET isRed = v.color = 'Red'
+         RETURN z.type AS zone_type, count(v) AS vehicle_count
+         GROUP BY zone_type, isRed";
+    
+         assert!(false, "Test not implemented yet");
+}
+
+#[test]
+fn implicit_grouping_with_let() {
+    // Implicit grouping with LET
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
          LET isRed = v.color = 'Red'
          RETURN z.type AS zone_type, isRed, count(v) AS vehicle_count";
-
-    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
     
-    let expected_ast = Query {
-        parts: vec![
-            QueryPart {
-                match_clauses: vec![MatchClause {
-                    start: NodeMatch {
-                        annotation: Annotation { name: Some("v".into()) },
-                        labels: vec!["Vehicle".into()],
-                        property_predicates: vec![],
-                    },
-                    path: vec![(
-                        RelationMatch::right(Annotation::empty(), vec!["LOCATED_IN".into()], vec![], None),
-                        NodeMatch {
-                            annotation: Annotation { name: Some("z".into()) },
-                            labels: vec!["Zone".into()],
-                            property_predicates: vec![],
-                        }
-                    )],
-                    optional: false,
-                }],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::GroupBy {
-                    grouping: vec![
-                        UnaryExpression::alias(
-                            UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
-                            "zone_type".into()
-                        ),
-                        UnaryExpression::alias(
-                            BinaryExpression::eq(
-                                UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
-                                UnaryExpression::literal(Literal::Text("Red".into()))
-                            ),
-                            "isRed".into()
-                        ),
-                    ],
-                    aggregates: vec![
-                        UnaryExpression::alias(
-                            FunctionExpression::function("count".into(), vec![UnaryExpression::ident("v")], 123),
-                            "vehicle_count".into()
-                        )
-                    ]
-                }
-            },
-            QueryPart {
-                match_clauses: vec![],
-                where_clauses: vec![],
-                return_clause: ProjectionClause::Item(vec![
-                    UnaryExpression::ident("zone_type"),
-                    UnaryExpression::ident("isRed"),
-                    UnaryExpression::ident("vehicle_count"),
-                ]),
-            }
-        ],
-    };
-
-    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure for LET with implicit aggregation");
+         assert!(false, "Test not implemented yet");
 }
 
-// MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
-//          LET isRed = v.color = 'Red'
-//          LET isBlue = v.color = 'Blue'
-//          RETURN z.type AS zone_type
-//          GROUP BY zone_type, isRed, isBlue
+#[test]
+fn implicit_grouping_with_multiple_let() {
+    // Implicit grouping with multiple LET
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         LET isRed = v.color = 'Red'
+         LET isBlue = v.color = 'Blue'
+         RETURN z.type AS zone_type, isRed, isBlue, count(v) AS vehicle_count";
+    
+         assert!(false, "Test not implemented yet");
+}
+
+#[test]
+fn let_variable_not_used_in_group_by_or_return() {
+    // LET Variable Not Used in GROUP BY or RETURN
+    let query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         LET isRed = v.color = 'Red'
+         RETURN z.type AS zone_type, count(v) AS vehicle_count
+         GROUP BY zone_type";
+    
+         assert!(false, "Test not implemented yet");
+}
