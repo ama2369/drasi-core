@@ -448,35 +448,58 @@ pub fn build_query_parts(
     config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
     if let_yield_clauses.is_empty() {
-        return if let Some(keys) = group_by_exprs {
-            handle_explicit_group_by(
-                match_clauses,
-                where_clauses,
-                final_return,
-                keys,
-                config,
-            )
+        // No LET/YIELD: either a plain RETURN or a grouped one
+        if let Some(keys) = group_by_exprs {
+            handle_explicit_group_by(match_clauses, where_clauses, final_return, keys, config)
         } else {
-            vec![ QueryPart {
-                match_clauses,
-                where_clauses,
-                return_clause: final_return.into_projection_clause(config),
-            } ]
-        };
-    }
+            vec![
+                QueryPart {
+                    match_clauses,
+                    where_clauses,
+                    return_clause: final_return.into_projection_clause(config),
+                }
+            ]
+        }
+    } else {
+        // LET/YIELD present, so build query parts
+        let mut parts = parts_for_let_yield(
+            match_clauses,
+            where_clauses,
+            let_yield_clauses,
+            config,
+        );
 
-    // Convert each LET/YIELD to a WITH
+        if let Some(keys) = group_by_exprs {
+            parts.extend(handle_explicit_group_by(Vec::new(), Vec::new(), final_return, keys, config));
+        } else {
+            parts.push(QueryPart {
+                match_clauses: Vec::new(),
+                where_clauses: Vec::new(),
+                return_clause: final_return.into_projection_clause(config),
+            });
+        }
+
+        parts
+    }
+}
+
+// Builds QueryParts for each LET/YIELD clause (the WITH equivalents).
+fn parts_for_let_yield(
+    mut match_clauses: Vec<MatchClause>,
+    mut where_clauses: Vec<Expression>,
+    let_yield_clauses: Vec<LetYieldClause>,
+    config: &dyn GQLConfiguration,
+) -> Vec<QueryPart> {
     let mut parts = Vec::new();
     let mut scope = extract_current_scope(&match_clauses);
 
-    for let_yield_clause in let_yield_clauses {
-        if !let_yield_clause.lets.is_empty() {
-            let mut proj = scope
-                .iter()
-                .cloned()
-                .map(|n: Arc<str>| UnaryExpression::ident(n.as_ref()))
+    for clause in let_yield_clauses {
+        // Handle LET assignments
+        if !clause.lets.is_empty() {
+            let mut proj = scope.iter().cloned()
+                .map(|name: Arc<str>| UnaryExpression::ident(name.as_ref()))
                 .collect::<Vec<_>>();
-            for (alias, expr) in &let_yield_clause.lets {
+            for (alias, expr) in &clause.lets {
                 proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
                 scope.push(alias.clone());
             }
@@ -488,16 +511,15 @@ pub fn build_query_parts(
         }
 
         // Handle YIELD assignments
-        if !let_yield_clause.yields.is_empty() {
+        if !clause.yields.is_empty() {
             let mut proj = Vec::new();
             scope.clear();
-            for (expr, maybe_alias) in &let_yield_clause.yields {
-                if let Some(alias) = maybe_alias.clone() {
+            for (expr, alias_opt) in &clause.yields {
+                if let Some(alias) = alias_opt {
                     proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
-                    scope.push(alias);
+                    scope.push(alias.clone());
                 } else {
                     proj.push(expr.clone());
-                    // if it's a bare identifier, bring it into scope
                     if let Expression::UnaryExpression(UnaryExpression::Identifier(id)) = expr {
                         scope.push(id.clone());
                     }
@@ -509,24 +531,6 @@ pub fn build_query_parts(
                 return_clause: ProjectionClause::Item(proj),
             });
         }
-    }
-
-    // Finally, do the RETURN and/or GROUP BY
-    if let Some(keys) = group_by_exprs {
-        let mut group_parts = handle_explicit_group_by(
-            Vec::new(),
-            Vec::new(),
-            final_return,
-            keys,
-            config,
-        );
-        parts.append(&mut group_parts);
-    } else {
-        parts.push(QueryPart {
-            match_clauses: Vec::new(),
-            where_clauses: Vec::new(),
-            return_clause: final_return.into_projection_clause(config),
-        });
     }
 
     parts
