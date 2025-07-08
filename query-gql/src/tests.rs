@@ -433,6 +433,89 @@ fn grouping_on_non_aliased_function() {
         }
     );
 }
+#[test]
+fn group_by_and_where_on_vehicles() {
+    // This test checks GROUP BY and WHERE together
+    let query = gql::query(
+        "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         WHERE v.color = 'Red'
+         RETURN z.type, count(v) AS vehicle_count
+         GROUP BY z.type
+        ",
+        &TEST_CONFIG,
+    )
+    .unwrap();
+
+    assert_eq!(
+        query,
+        Query {
+            parts: vec![
+                QueryPart {
+                    match_clauses: vec![
+                        MatchClause {
+                            start: NodeMatch {
+                                annotation: Annotation {
+                                    name: Some("v".into()),
+                                },
+                                labels: vec!["Vehicle".into()],
+                                property_predicates: vec![],
+                            },
+                            path: vec![
+                                (
+                                    RelationMatch {
+                                        direction: Direction::Right,
+                                        annotation: Annotation {
+                                            name: None,
+                                        },
+                                        variable_length: None,
+                                        labels: vec!["LOCATED_IN".into()],
+                                        property_predicates: vec![],
+                                    },
+                                    NodeMatch {
+                                        annotation: Annotation {
+                                            name: Some("z".into()),
+                                        },
+                                        labels: vec!["Zone".into()],
+                                        property_predicates: vec![],
+                                    },
+                                ),
+                            ],
+                            optional: false,
+                        },
+                    ],
+                    where_clauses: vec![
+                        BinaryExpression::eq(
+                            UnaryExpression::expression_property(
+                                UnaryExpression::ident("v"),
+                                "color".into()
+                            ),
+                            UnaryExpression::literal(Literal::Text("Red".into()))
+                        ),
+                    ],
+                    return_clause: ProjectionClause::GroupBy {
+                        grouping: vec![
+                            UnaryExpression::expression_property(
+                                UnaryExpression::ident("z"),
+                                "type".into()
+                            ),
+                        ],
+                        aggregates: vec![
+                            UnaryExpression::alias(
+                                FunctionExpression::function(
+                                    "count".into(),
+                                    vec![UnaryExpression::ident("v")],
+                                    97
+                                ),
+                                "vehicle_count".into()
+                            ),
+                        ],
+                    },
+                },
+            ],
+        }
+    );
+}
+
 
 // LET and YIELD Tests
 // ZoneVehicleGraph Tests
@@ -565,6 +648,23 @@ fn example_4_chained_let_clauses_preserving_all_variables() {
     let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
     let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
 
+
+    assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+#[test]
+fn test_let_with_where_clause() {
+    let gql_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+    WHERE z.type = 'Garage'
+    LET color = v.color
+    RETURN color";
+    let cypher_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+    WHERE z.type = 'Garage'
+    WITH v, z, v.color as color
+    RETURN color";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
 
     assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
 }
@@ -1150,3 +1250,59 @@ fn let_variable_not_used_in_group_by_or_return() {
     };
     assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure");
 }
+
+
+// YIELD tests
+
+#[test]
+fn simple_yield() {
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         YIELD v.color AS vehicleColor, z.type AS location
+         RETURN vehicleColor, location";
+    let cypher_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+        WITH v.color AS vehicleColor, z.type AS location
+        RETURN vehicleColor, location";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
+
+    assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+#[test]
+fn yield_single_identifier() {
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         YIELD v
+         RETURN v.color";
+    let cypher_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+        WITH v
+        RETURN v.color";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
+
+    assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+#[test]
+fn yield_with_let_and_chained_yield() {
+    let gql_query = "MATCH (p:Product)
+         LET productName = p.name, cost = p.price
+         YIELD productName, cost
+         LET total = cost * 1.2
+         YIELD total AS finalPrice
+         RETURN finalPrice";
+    let cypher_query = "MATCH (p:Product)
+        WITH p, p.name AS productName, p.price AS cost
+        WITH productName, cost
+        WITH productName, cost, cost * 1.2 AS total
+        WITH total AS finalPrice
+        RETURN finalPrice";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
+
+    assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+
