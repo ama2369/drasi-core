@@ -440,8 +440,8 @@ pub struct LetYieldClause {
 }
 
 pub fn build_query_parts(
-    mut match_clauses: Vec<MatchClause>,
-    mut where_clauses: Vec<Expression>,
+    match_clauses: Vec<MatchClause>,
+    where_clauses: Vec<Expression>,
     let_yield_clauses: Vec<LetYieldClause>,
     final_return: Vec<Expression>,
     group_by_exprs: Option<Vec<Expression>>,
@@ -466,7 +466,6 @@ pub fn build_query_parts(
             match_clauses,
             where_clauses,
             let_yield_clauses,
-            config,
         );
 
         if let Some(keys) = group_by_exprs {
@@ -488,7 +487,6 @@ fn parts_for_let_yield(
     mut match_clauses: Vec<MatchClause>,
     mut where_clauses: Vec<Expression>,
     let_yield_clauses: Vec<LetYieldClause>,
-    config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
     let mut parts = Vec::new();
     let mut scope = extract_current_scope(&match_clauses);
