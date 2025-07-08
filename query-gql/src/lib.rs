@@ -437,7 +437,7 @@ fn build_query_parts(
     config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
     if !let_statements.is_empty() {
-        desugar_lets(
+        handle_let_statements(
             match_clauses,
             where_clauses,
             let_statements,
@@ -446,7 +446,6 @@ fn build_query_parts(
             config,
         )
     } else {
-        // <existing logic for no-LET case>
         match group_by_exprs {
             Some(keys) => handle_explicit_group_by(
                 match_clauses,
@@ -464,14 +463,12 @@ fn build_query_parts(
     }
 }
 
-fn extract_scope_names(match_clauses: &[MatchClause]) -> Vec<Arc<str>> {
+fn extract_current_scope(match_clauses: &[MatchClause]) -> Vec<Arc<str>> {
     let mut names = Vec::new();
     for clause in match_clauses {
-        // node variable on the left
         if let Some(name) = &clause.start.annotation.name {
             names.push(name.clone());
         }
-        // any node variables in the path
         for (_rel, node) in &clause.path {
             if let Some(name) = &node.annotation.name {
                 names.push(name.clone());
@@ -481,30 +478,25 @@ fn extract_scope_names(match_clauses: &[MatchClause]) -> Vec<Arc<str>> {
     names
 }
 
-// 2) Desugar all the LET clauses into a series of WITH‐style QueryParts
-fn desugar_lets(
+fn handle_let_statements(
     match_clauses: Vec<MatchClause>,
     where_clauses: Vec<Expression>,
-    let_stmts: Vec<Vec<(Arc<str>, Expression)>>,
+    let_statements: Vec<Vec<(Arc<str>, Expression)>>,
     final_return: Vec<Expression>,
     group_by_exprs: Option<Vec<Expression>>,
     config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
     let mut parts = Vec::new();
 
-    // start with the names bound by MATCH
-    let mut scope_names = extract_scope_names(&match_clauses);
+    let mut variables_in_scope = extract_current_scope(&match_clauses);
 
-    // for each LET clause…
-    for (i, assigns) in let_stmts.into_iter().enumerate() {
-        // build the projection list: every name so far, plus each `expr AS alias`
+    for (i, assigns) in let_statements.into_iter().enumerate() {
         let mut projections: Vec<Expression> =
-            scope_names.iter().map(|n| UnaryExpression::ident(n)).collect();
+            variables_in_scope.iter().map(|n| UnaryExpression::ident(n)).collect();
         for (alias, expr) in &assigns {
             projections.push(UnaryExpression::alias(expr.clone(), alias.clone()));
         }
 
-        // first LET needs the MATCH+WHERE; later ones are pure WITH
         let (m, w) = if i == 0 {
             (match_clauses.clone(), where_clauses.clone())
         } else {
@@ -517,19 +509,16 @@ fn desugar_lets(
             return_clause: ProjectionClause::Item(projections.clone()),
         });
 
-        // update scope: now we also have each new alias as a column name
         for (alias, _) in assigns {
-            scope_names.push(alias);
+            variables_in_scope.push(alias);
         }
     }
 
-    // finally, emit the real RETURN (or GROUP BY) against the working table
     match group_by_exprs {
         Some(keys) => {
-            // reuse existing grouping logic, but on an already‐projected table
             let group_parts = handle_explicit_group_by(
-                Vec::new(),            // match_clauses
-                Vec::new(),            // where_clauses
+                Vec::new(),
+                Vec::new(),
                 final_return,
                 keys,
                 config,
@@ -586,7 +575,7 @@ fn handle_explicit_group_by(
 
     // Fewer keys are projected in the RETURN than are in the GROUP BY clause.
     // For each GROUP BY key, use the matching expression from RETURN if available (to preserve aliases or formatting)
-    //otherwise, retain the original GROUP BY key.
+    // otherwise, retain the original GROUP BY key.
     let full_keys: Vec<_> = group_by_keys
         .into_iter()
         .map(|key| {
