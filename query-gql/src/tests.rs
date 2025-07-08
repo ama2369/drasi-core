@@ -550,7 +550,7 @@ fn simple_let_and_return() {
 }
 
 #[test]
-fn example_1_simple_let_assignment() {
+fn simple_let_assignment() {
     let gql_query = "MATCH (v:Vehicle)
          LET isRed = v.color = 'Red'
          RETURN v.color, isRed";
@@ -565,7 +565,7 @@ fn example_1_simple_let_assignment() {
 }
 
 #[test]
-fn example_2_let_with_expression() {
+fn let_with_expression() {
     let gql_query = "MATCH (a:Account)
          LET isVacation = a.nick_name = 'Vacation Fund'
          RETURN a.nick_name, isVacation";
@@ -580,7 +580,7 @@ fn example_2_let_with_expression() {
 }
 
 #[test]
-fn example_3_multiple_let_variables_in_one_clause() {
+fn multiple_let_variables_in_one_clause() {
     let gql_query = "MATCH (a:Account)
          LET active = a.is_blocked = false, nameLength = LENGTH(a.nick_name)
          RETURN a.nick_name, active, nameLength";
@@ -635,7 +635,7 @@ fn example_3_multiple_let_variables_in_one_clause() {
 }
 
 #[test]
-fn example_4_chained_let_clauses_preserving_all_variables() {
+fn chained_let_clauses_preserving_all_variables() {
     let gql_query = "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
          LET isRed = v.color = 'Red'
          LET inGarage = z.type = 'Garage'
@@ -670,7 +670,7 @@ fn test_let_with_where_clause() {
 }
 
 #[test]
-fn example_5_let_with_conditionals() {
+fn let_with_conditionals() {
     let gql_query = "MATCH (a:Account)
          LET status = CASE WHEN a.is_blocked THEN 'Blocked' ELSE 'Active' END
          RETURN a.nick_name, status";
@@ -685,7 +685,7 @@ fn example_5_let_with_conditionals() {
 }
 
 #[test]
-fn example_6_chained_lets_with_multiple_new_variables() {
+fn chained_lets_with_multiple_new_variables() {
     let gql_query = "MATCH (p:Person)
          LET nameLength = LENGTH(p.name)
          LET isShortName = nameLength < 5, isLongName = nameLength > 7
@@ -1303,6 +1303,341 @@ fn yield_with_let_and_chained_yield() {
     let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
 
     assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+#[test]
+fn yield_with_where() {
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         WHERE v.color = 'Red'
+         YIELD v.color AS vehicleColor, z.type AS location
+         RETURN vehicleColor, location";
+    let cypher_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+        WHERE v.color = 'Red'
+        WITH v.color AS vehicleColor, z.type AS location
+        RETURN vehicleColor, location";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    let cypher_ast = parse(cypher_query, &TestCypherConfig {}).unwrap();
+
+    assert_eq!(gql_ast, cypher_ast, "GQL and Cypher ASTs should be equal");
+}
+
+#[test]
+fn yield_with_group_by() {
+    // MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+    // WITH z.type AS zone_type, v.color AS vehicle_color
+    // RETURN zone_type, vehicle_color, count(1) AS vehicle_count
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         YIELD z.type AS zone_type, v.color AS vehicle_color
+         RETURN zone_type, vehicle_color, count(1) AS vehicle_count
+         GROUP BY zone_type, vehicle_color";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    
+    let expected_ast = Query {
+        parts: vec![
+            QueryPart {
+                match_clauses: vec![MatchClause {
+                    start: NodeMatch {
+                        annotation: Annotation { name: Some("v".into()) },
+                        labels: vec!["Vehicle".into()],
+                        property_predicates: vec![],
+                    },
+                    path: vec![
+                        (
+                            RelationMatch {
+                                direction: Direction::Right,
+                                annotation: Annotation { name: Some("e".into()) },
+                                variable_length: None,
+                                labels: vec!["LOCATED_IN".into()],
+                                property_predicates: vec![],
+                            },
+                            NodeMatch {
+                                annotation: Annotation { name: Some("z".into()) },
+                                labels: vec!["Zone".into()],
+                                property_predicates: vec![],
+                            },
+                        ),
+                    ],
+                    optional: false,
+                }],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
+                        "zone_type".into()
+                    ),
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
+                        "vehicle_color".into()
+                    ),
+                ]),
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::GroupBy {
+                    grouping: vec![
+                        UnaryExpression::ident("zone_type"),
+                        UnaryExpression::ident("vehicle_color"),
+                    ],
+                    aggregates: vec![
+                        UnaryExpression::alias(
+                            FunctionExpression::function(
+                                "count".into(),
+                                vec![UnaryExpression::literal(Literal::Integer(1))],
+                                146
+                            ),
+                            "vehicle_count".into()
+                        ),
+                    ],
+                },
+            },
+        ],
+    };
+
+    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure");
+}
+
+#[test]
+fn yield_with_group_by_fewer_columns_projected() {
+    // MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+    // WITH z.type AS zone_type, v.color AS vehicle_color
+    // WITH zone_type, vehicle_color, count(1) AS vehicle_count
+    // RETURN zone_type, vehicle_count
+    
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         YIELD z.type AS zone_type, v.color AS vehicle_color
+         RETURN zone_type, count(1) AS vehicle_count
+         GROUP BY zone_type, vehicle_color";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    
+    let expected_ast = Query {
+        parts: vec![
+            QueryPart {
+                match_clauses: vec![MatchClause {
+                    start: NodeMatch {
+                        annotation: Annotation { name: Some("v".into()) },
+                        labels: vec!["Vehicle".into()],
+                        property_predicates: vec![],
+                    },
+                    path: vec![
+                        (
+                            RelationMatch {
+                                direction: Direction::Right,
+                                annotation: Annotation { name: Some("e".into()) },
+                                variable_length: None,
+                                labels: vec!["LOCATED_IN".into()],
+                                property_predicates: vec![],
+                            },
+                            NodeMatch {
+                                annotation: Annotation { name: Some("z".into()) },
+                                labels: vec!["Zone".into()],
+                                property_predicates: vec![],
+                            },
+                        ),
+                    ],
+                    optional: false,
+                }],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
+                        "zone_type".into()
+                    ),
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
+                        "vehicle_color".into()
+                    ),
+                ]),
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::GroupBy {
+                    grouping: vec![
+                        UnaryExpression::ident("zone_type"),
+                        UnaryExpression::ident("vehicle_color"),
+                    ],
+                    aggregates: vec![
+                        UnaryExpression::alias(
+                            FunctionExpression::function(
+                                "count".into(),
+                                vec![UnaryExpression::literal(Literal::Integer(1))],
+                                131
+                            ),
+                            "vehicle_count".into()
+                        ),
+                    ],
+                },
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::ident("zone_type"),
+                    UnaryExpression::ident("vehicle_count"),
+                ]),
+            },
+        ],
+    };
+
+    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure");
+}
+
+#[test]
+fn yield_let_and_group_by_together() {
+    // Equivalent Cypher:
+    // MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+    // WHERE v.color = 'Red'
+    // WITH v, z, v.color = 'Red' AS isRed
+    // WITH v, z, isRed, v.price > 50000 AS isExpensive
+    // WITH z.type AS zone_type, v.color AS vehicle_color, isRed, isExpensive
+    // WITH zone_type, isRed, isExpensive, count(1) AS vehicle_count
+    // RETURN zone_type, isRed, vehicle_count
+    let gql_query = "MATCH (v:Vehicle)-[e:LOCATED_IN]->(z:Zone)
+         WHERE v.color = 'Red'
+         LET isRed = v.color = 'Red'
+         LET isExpensive = v.price > 50000
+         YIELD z.type AS zone_type, v.color AS vehicle_color, isRed, isExpensive
+         RETURN zone_type, isRed, count(1) AS vehicle_count
+         GROUP BY zone_type, isRed, isExpensive";
+
+    let gql_ast = gql::query(gql_query, &TEST_CONFIG).unwrap();
+    
+    let expected_ast = Query {
+        parts: vec![
+            QueryPart {
+                match_clauses: vec![MatchClause {
+                    start: NodeMatch {
+                        annotation: Annotation {
+                            name: Some("v".into()),
+                        },
+                        labels: vec!["Vehicle".into()],
+                        property_predicates: vec![],
+                    },
+                    path: vec![
+                        (
+                            RelationMatch {
+                                direction: Direction::Right,
+                                annotation: Annotation {
+                                    name: Some("e".into()),
+                                },
+                                variable_length: None,
+                                labels: vec!["LOCATED_IN".into()],
+                                property_predicates: vec![],
+                            },
+                            NodeMatch {
+                                annotation: Annotation {
+                                    name: Some("z".into()),
+                                },
+                                labels: vec!["Zone".into()],
+                                property_predicates: vec![],
+                            },
+                        ),
+                    ],
+                    optional: false,
+                }],
+                where_clauses: vec![
+                    BinaryExpression::eq(
+                        UnaryExpression::expression_property(
+                            UnaryExpression::ident("v"),
+                            "color".into()
+                        ),
+                        UnaryExpression::literal(Literal::Text("Red".into()))
+                    ),
+                ],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::ident("v"),
+                    UnaryExpression::ident("z"),
+                    UnaryExpression::alias(
+                        BinaryExpression::eq(
+                            UnaryExpression::expression_property(
+                                UnaryExpression::ident("v"),
+                                "color".into()
+                            ),
+                            UnaryExpression::literal(Literal::Text("Red".into()))
+                        ),
+                        "isRed".into()
+                    ),
+                ]),
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::ident("v"),
+                    UnaryExpression::ident("z"),
+                    UnaryExpression::ident("isRed"),
+                    UnaryExpression::alias(
+                        BinaryExpression::gt(
+                            UnaryExpression::expression_property(
+                                UnaryExpression::ident("v"),
+                                "price".into()
+                            ),
+                            UnaryExpression::literal(Literal::Integer(50000))
+                        ),
+                        "isExpensive".into()
+                    ),
+                ]),
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(
+                            UnaryExpression::ident("z"),
+                            "type".into()
+                        ),
+                        "zone_type".into()
+                    ),
+                    UnaryExpression::alias(
+                        UnaryExpression::expression_property(
+                            UnaryExpression::ident("v"),
+                            "color".into()
+                        ),
+                        "vehicle_color".into()
+                    ),
+                    UnaryExpression::ident("isRed"),
+                    UnaryExpression::ident("isExpensive"),
+                ]),
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::GroupBy {
+                    grouping: vec![
+                        UnaryExpression::ident("zone_type"),
+                        UnaryExpression::ident("isRed"),
+                        UnaryExpression::ident("isExpensive"),
+                    ],
+                    aggregates: vec![
+                        UnaryExpression::alias(
+                            FunctionExpression::function(
+                                "count".into(),
+                                vec![UnaryExpression::literal(Literal::Integer(1))],
+                                269
+                            ),
+                            "vehicle_count".into()
+                        ),
+                    ],
+                },
+            },
+            QueryPart {
+                match_clauses: vec![],
+                where_clauses: vec![],
+                return_clause: ProjectionClause::Item(vec![
+                    UnaryExpression::ident("zone_type"),
+                    UnaryExpression::ident("isRed"),
+                    UnaryExpression::ident("vehicle_count"),
+                ]),
+            },
+        ],
+    };
+
+    assert_eq!(gql_ast, expected_ast, "GQL AST should match expected structure with YIELD, LET, and GROUP BY combined");
 }
 
 

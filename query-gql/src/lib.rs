@@ -218,9 +218,9 @@ peg::parser! {
               assigns:(yield_assign() ** (__* "," __*))
               __* { assigns }
 
-        rule segment() -> QueryPartSegment
-            = l:let_statement()   { QueryPartSegment::Let(l) }
-            / y:yield_statement() { QueryPartSegment::Yield(y) }
+        rule let_yield_clause() -> LetYieldClause
+            = l:let_statement()   { LetYieldClause { lets: l, yields: Vec::new() } }
+            / y:yield_statement() { LetYieldClause { lets: Vec::new(), yields: y } }
 
             #[cache_left_rec]
         pub rule expression() -> Expression
@@ -400,12 +400,12 @@ peg::parser! {
         rule part(config: &dyn GQLConfiguration) -> Vec<QueryPart>
             = match_clauses:( __* m:(match_clause() ** (__+) )? { m.unwrap_or_default().into_iter().flatten().collect() } )
               where_clauses:( __* w:(where_clause() ** (__+) )? { w.unwrap_or_default() } )
-              segments:( __* s:segment() __* { s } )*
+              let_yield_clauses:( __* s:let_yield_clause() __* { s } )*
               __*
               return_clause:(with_or_return())
               group_by_exprs:( __* g:group_by_clause()? { g } )
               __*
-              { build_query_parts(match_clauses, where_clauses, segments, return_clause, group_by_exprs, config) }
+              { build_query_parts(match_clauses, where_clauses, let_yield_clauses, return_clause, group_by_exprs, config) }
 
         pub rule query(config: &dyn GQLConfiguration) -> Query
             = __*
@@ -434,21 +434,20 @@ pub trait GQLConfiguration: Send + Sync {
     fn get_aggregating_function_names(&self) -> HashSet<String>;
 }
 
-pub enum QueryPartSegment {
-    Let(Vec<(Arc<str>, Expression)>),
-    Yield(Vec<(Expression, Option<Arc<str>>)>) ,
+pub struct LetYieldClause {
+    pub lets: Vec<(Arc<str>, Expression)>,
+    pub yields: Vec<(Expression, Option<Arc<str>>)>,
 }
 
 pub fn build_query_parts(
     mut match_clauses: Vec<MatchClause>,
     mut where_clauses: Vec<Expression>,
-    segments: Vec<QueryPartSegment>,
+    let_yield_clauses: Vec<LetYieldClause>,
     final_return: Vec<Expression>,
     group_by_exprs: Option<Vec<Expression>>,
     config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
-    // No LET/YIELD segments
-    if segments.is_empty() {
+    if let_yield_clauses.is_empty() {
         return if let Some(keys) = group_by_exprs {
             handle_explicit_group_by(
                 match_clauses,
@@ -470,48 +469,45 @@ pub fn build_query_parts(
     let mut parts = Vec::new();
     let mut scope = extract_current_scope(&match_clauses);
 
-    for segment in segments {
-        match segment {
-            QueryPartSegment::Let(assigns) => {
-                // WITH old-scope + new aliases
-                let mut proj = scope
-                    .iter()
-                    .cloned()
-                    .map(|n: Arc<str>| UnaryExpression::ident(n.as_ref()))
-                    .collect::<Vec<_>>();
-                for (alias, expr) in &assigns {
-                    proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
-                    scope.push(alias.clone());
-                }
-                parts.push(QueryPart {
-                    match_clauses: std::mem::take(&mut match_clauses),
-                    where_clauses: std::mem::take(&mut where_clauses),
-                    return_clause: ProjectionClause::Item(proj),
-                });
+    for let_yield_clause in let_yield_clauses {
+        if !let_yield_clause.lets.is_empty() {
+            let mut proj = scope
+                .iter()
+                .cloned()
+                .map(|n: Arc<str>| UnaryExpression::ident(n.as_ref()))
+                .collect::<Vec<_>>();
+            for (alias, expr) in &let_yield_clause.lets {
+                proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
+                scope.push(alias.clone());
             }
+            parts.push(QueryPart {
+                match_clauses: std::mem::take(&mut match_clauses),
+                where_clauses: std::mem::take(&mut where_clauses),
+                return_clause: ProjectionClause::Item(proj),
+            });
+        }
 
-            QueryPartSegment::Yield(cols) => {
-                // WITH exactly these columns (drops prior scope)
-                let mut proj = Vec::new();
-                scope.clear();
-                for (expr, maybe_alias) in cols {
-                    if let Some(alias) = maybe_alias.clone() {
-                        proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
-                        scope.push(alias);
-                    } else {
-                        proj.push(expr.clone());
-                        // if it's a bare identifier, bring it into scope
-                        if let Expression::UnaryExpression(UnaryExpression::Identifier(id)) = &expr {
-                            scope.push(id.clone());
-                        }
+        // Handle YIELD assignments
+        if !let_yield_clause.yields.is_empty() {
+            let mut proj = Vec::new();
+            scope.clear();
+            for (expr, maybe_alias) in &let_yield_clause.yields {
+                if let Some(alias) = maybe_alias.clone() {
+                    proj.push(UnaryExpression::alias(expr.clone(), alias.clone()));
+                    scope.push(alias);
+                } else {
+                    proj.push(expr.clone());
+                    // if it's a bare identifier, bring it into scope
+                    if let Expression::UnaryExpression(UnaryExpression::Identifier(id)) = expr {
+                        scope.push(id.clone());
                     }
                 }
-                parts.push(QueryPart {
-                    match_clauses: std::mem::take(&mut match_clauses),
-                    where_clauses: std::mem::take(&mut where_clauses),
-                    return_clause: ProjectionClause::Item(proj),
-                });
             }
+            parts.push(QueryPart {
+                match_clauses: std::mem::take(&mut match_clauses),
+                where_clauses: std::mem::take(&mut where_clauses),
+                return_clause: ProjectionClause::Item(proj),
+            });
         }
     }
 
