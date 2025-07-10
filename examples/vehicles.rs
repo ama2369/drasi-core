@@ -18,22 +18,30 @@ use std::sync::Arc;
 
 use drasi_core::{
     models::{Element, ElementMetadata, ElementPropertyMap, ElementReference, SourceChange},
-    query::{QueryBuilder, QueryParserType},
+    query::QueryBuilder,
+};
+use drasi_query_ast::ast::{
+    Annotation, BinaryExpression, Direction, Expression, Literal, MatchClause, NodeMatch,
+    ProjectionClause, Query, QueryPart, RelationMatch, UnaryExpression,
 };
 use serde_json::json;
+
 
 
 #[allow(clippy::print_stdout, clippy::unwrap_used)]
 #[tokio::main]
 async fn main() {
     let query_str = "
-    MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
-    WITH z.type AS zone_type, v.color = 'Red' AS isRed, count(v) AS vehicle_count
-    RETURN zone_type, isRed, vehicle_count
-        ";
+   MATCH (v:Vehicle)
+     WHERE v.miles > 60000
+    RETURN v.color";
 
-   let query_builder = QueryBuilder::new(query_str);
+    // Use hardcoded AST instead of parsing
+    let hardcoded_ast = create_hardcoded_ast();
+
+     let query_builder = QueryBuilder::new(query_str).with_custom_ast(hardcoded_ast);
     //let query_builder = QueryBuilder::new(query_str).with_query_parser(QueryParserType::GQL);
+    //let query_builder = QueryBuilder::new(query_str);
     let query = query_builder.build().await;
     println!("Query: {:#?}", query);
 
@@ -43,29 +51,12 @@ async fn main() {
     }
     println!("Initial data loaded: 2 vehicles (Blue and Red) and 1 zone (Parking Lot)");
 
-    println!("\n=== Change 1: Creating location relationship ===");
-    println!("Creating LOCATED_IN relationship: Vehicle v1 (Blue) -> Zone z1 (Parking Lot)");
-    println!(
-        "Result: {:?}",
-        query
-            .process_source_change(SourceChange::Insert {
-                element: Element::Relation {
-                    metadata: ElementMetadata {
-                        reference: ElementReference::new("", "v1-location"),
-                        labels: Arc::new([Arc::from("LOCATED_IN")]),
-                        effective_from: 0,
-                    },
-                    properties: ElementPropertyMap::new(),
-                    out_node: ElementReference::new("", "z1"),
-                    in_node: ElementReference::new("", "v1"),
-                },
-            })
-            .await
-            .unwrap()
-    );
+    println!("\n=== Change 1: Testing initial state ===");
+    println!("Initial data loaded: 2 vehicles (v1: 50000 miles, v2: 30000 miles)");
+    println!("Note: Results are obtained through source changes, not direct query");
 
     println!("\n=== Change 2: Updating vehicle properties ===");
-    println!("Updating Vehicle v1: Changing color from 'Blue' to 'Green'");
+    println!("Updating Vehicle v1: Changing miles from 50000 to 75000");
     println!(
         "Result: {:?}",
         query
@@ -78,7 +69,8 @@ async fn main() {
                     },
                     properties: ElementPropertyMap::from(json!({
                         "plate": "AAA-1234",
-                        "color": "Green"
+                        "color": "Blue",
+                        "miles": 75000
                     }))
                 },
             })
@@ -86,16 +78,23 @@ async fn main() {
             .unwrap()
     );
 
-    println!("\n=== Change 3: Deleting relationship ===");
-    println!("Deleting LOCATED_IN relationship: Vehicle v1 -> Zone z1");
+    println!("\n=== Change 3: Updating vehicle color ===");
+    println!("Updating Vehicle v1: Changing color from 'Blue' to 'Red' (keeping miles at 75000)");
     println!(
         "Result: {:?}",
         query
-            .process_source_change(SourceChange::Delete {
-                metadata: ElementMetadata {
-                    reference: ElementReference::new("", "v1-location"),
-                    labels: Arc::new([Arc::from("LOCATED_IN")]),
-                    effective_from: 0,
+            .process_source_change(SourceChange::Update {
+                element: Element::Node {
+                    metadata: ElementMetadata {
+                        reference: ElementReference::new("", "v1"),
+                        labels: Arc::new([Arc::from("Vehicle")]),
+                        effective_from: 0,
+                    },
+                    properties: ElementPropertyMap::from(json!({
+                        "plate": "AAA-1234",
+                        "color": "Red",
+                        "miles": 75000
+                    }))
                 },
             })
             .await
@@ -105,7 +104,7 @@ async fn main() {
 
 fn get_initial_data() -> Vec<SourceChange> {
     vec![
-        // Vehicle v1: Blue vehicle with plate AAA-1234
+        // Vehicle v1: Blue vehicle with plate AAA-1234 and 50000 miles
         SourceChange::Insert {
             element: Element::Node {
                 metadata: ElementMetadata {
@@ -115,11 +114,12 @@ fn get_initial_data() -> Vec<SourceChange> {
                 },
                 properties: ElementPropertyMap::from(json!({
                     "plate": "AAA-1234",
-                    "color": "Blue"
+                    "color": "Blue",
+                    "miles": 50000
                 })),
             },
         },
-        // Vehicle v2: Red vehicle with plate ZZZ-7890
+        // Vehicle v2: Red vehicle with plate ZZZ-7890 and 30000 miles
         SourceChange::Insert {
             element: Element::Node {
                 metadata: ElementMetadata {
@@ -129,7 +129,8 @@ fn get_initial_data() -> Vec<SourceChange> {
                 },
                 properties: ElementPropertyMap::from(json!({
                     "plate": "ZZZ-7890",
-                    "color": "Red"
+                    "color": "Red",
+                    "miles": 30000
                 })),
             },
         },
@@ -147,4 +148,71 @@ fn get_initial_data() -> Vec<SourceChange> {
             },
         },
     ]
+}
+
+
+fn create_hardcoded_ast() -> Query {
+    Query {
+        parts: vec![
+            // First query part: Match with empty where clause
+            QueryPart {
+                match_clauses: vec![MatchClause {
+                    start: NodeMatch {
+                        annotation: Annotation {
+                            name: Some(Arc::from("v")),
+                        },
+                        labels: vec![Arc::from("Vehicle")],
+                        property_predicates: vec![],
+                    },
+                    path: vec![], // No relationships, just match vehicles
+                    optional: false,
+                }],
+                where_clauses: vec![], // Empty where clause
+                return_clause: ProjectionClause::Item(vec![
+                    Expression::UnaryExpression(UnaryExpression::Identifier(Arc::from("v"))),
+                ]),
+            },
+            // Second query part: Filter by miles
+            QueryPart {
+                match_clauses: vec![], // No new matches
+                where_clauses: vec![Expression::BinaryExpression(BinaryExpression::Gt(
+                    Box::new(Expression::UnaryExpression(UnaryExpression::ExpressionProperty {
+                        exp: Box::new(Expression::UnaryExpression(UnaryExpression::Identifier(
+                            Arc::from("v"),
+                        ))),
+                        key: Arc::from("miles"),
+                    })),
+                    Box::new(Expression::UnaryExpression(UnaryExpression::Literal(
+                        Literal::Integer(60000), // Filter for vehicles with more than 60000 miles
+                    ))),
+                ))],
+                return_clause: ProjectionClause::Item(vec![
+                    Expression::UnaryExpression(UnaryExpression::Identifier(Arc::from("v"))),
+                ]),
+            },
+            // Third query part: Filter by color and final projection
+            QueryPart {
+                match_clauses: vec![], // No new matches
+                where_clauses: vec![Expression::BinaryExpression(BinaryExpression::Eq(
+                    Box::new(Expression::UnaryExpression(UnaryExpression::ExpressionProperty {
+                        exp: Box::new(Expression::UnaryExpression(UnaryExpression::Identifier(
+                            Arc::from("v"),
+                        ))),
+                        key: Arc::from("color"),
+                    })),
+                    Box::new(Expression::UnaryExpression(UnaryExpression::Literal(
+                        Literal::Text(Arc::from("Red")), // Filter for red vehicles
+                    ))),
+                ))],
+                return_clause: ProjectionClause::Item(vec![Expression::UnaryExpression(
+                    UnaryExpression::ExpressionProperty {
+                        exp: Box::new(Expression::UnaryExpression(UnaryExpression::Identifier(
+                            Arc::from("v"),
+                        ))),
+                        key: Arc::from("color"),
+                    },
+                )]),
+            },
+        ],
+    }
 }

@@ -73,6 +73,7 @@ pub struct QueryBuilder {
     query_source: String,
     query_parser: Option<Arc<dyn QueryParser>>,
     parser_type: QueryParserType,
+    custom_ast: Option<Query>,
 }
 
 impl QueryBuilder {
@@ -92,11 +93,17 @@ impl QueryBuilder {
             query_source: query.into(),
             query_parser: None,
             parser_type: QueryParserType::default(),
+            custom_ast: None,
         }
     }
 
     pub fn with_query_parser(mut self, parser_type: QueryParserType) -> Self {
         self.parser_type = parser_type;
+        self
+    }
+
+    pub fn with_custom_ast(mut self, ast: Query) -> Self {
+        self.custom_ast = Some(ast);
         self
     }
 
@@ -194,7 +201,10 @@ impl QueryBuilder {
             }
         };
 
-        let query = query_parser.parse(self.query_source.as_str())?;
+        let query = match self.custom_ast.take() {
+            Some(ast) => ast,
+            None => query_parser.parse(self.query_source.as_str())?,
+        };
         let match_path = Arc::new(MatchPath::from_query(&query.parts[0])?);
 
         let element_index = match self.element_index.take() {

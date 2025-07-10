@@ -448,7 +448,6 @@ pub fn build_query_parts(
     config: &dyn GQLConfiguration,
 ) -> Vec<QueryPart> {
     if let_yield_clauses.is_empty() {
-        // No LET/YIELD: either a plain RETURN or a grouped one
         if let Some(keys) = group_by_exprs {
             handle_explicit_group_by(match_clauses, where_clauses, final_return, keys, config)
         } else {
@@ -461,7 +460,6 @@ pub fn build_query_parts(
             ]
         }
     } else {
-        // LET/YIELD present, so build query parts
         let mut parts = parts_for_let_yield(
             match_clauses,
             where_clauses,
@@ -534,6 +532,7 @@ fn parts_for_let_yield(
     parts
 }
 
+// MAY BE A BETTER IMPLEMENTATION FOR THIS in continuous_quer.rs line 463
 fn extract_current_scope(match_clauses: &[MatchClause]) -> Vec<Arc<str>> {
     let mut names = Vec::new();
     for clause in match_clauses {
@@ -619,10 +618,7 @@ fn expr_covers(expr: &Expression, key: &Expression) -> bool {
         (Expression::FunctionExpression(f1), Expression::FunctionExpression(f2)) => {
             f1.eq_ignore_position_in_query(f2)
         }
-        // If both expressions are binary expressions (*, +), it compares them ignoring operand order for commutative operations.
-        (Expression::BinaryExpression(b1), Expression::BinaryExpression(b2)) => {
-            b1.eq_ignore_commutativity(b2)
-        }
+
          // If the RETURN expression is an alias (a.name AS person_name) and the GROUP BY references the alias name (person_name), it is a match.
         (Expression::UnaryExpression(UnaryExpression::Alias { alias, .. }),
          Expression::UnaryExpression(UnaryExpression::Identifier(id))) => {
@@ -640,10 +636,8 @@ fn two_step_parts(
     original_return: &Vec<Expression>,
 ) -> Vec<QueryPart> {
     let first_return = if aggregates.is_empty() {
-        // No aggregates, so simple projection of grouping keys
         ProjectionClause::Item(grouping.clone())
     } else {
-        // Aggregates present, so use GROUP BY clause
         ProjectionClause::GroupBy { grouping: grouping.clone(), aggregates: aggregates.clone() }
     };
 
@@ -665,7 +659,7 @@ fn two_step_parts(
     vec![stage1, stage2]
 }
 
-// If the expression is an alias (x + 1 AS sum), replace it with just the alias identifier.
+// Converts an expression (x + 1 AS sum) to just the alias (sum).
 fn strip_alias(expr: &Expression) -> Expression {
     if let Expression::UnaryExpression(UnaryExpression::Alias { alias, .. }) = expr {
         UnaryExpression::ident(alias)

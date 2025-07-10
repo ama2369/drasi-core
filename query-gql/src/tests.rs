@@ -516,6 +516,81 @@ fn group_by_and_where_on_vehicles() {
     );
 }
 
+#[test]
+fn group_by_without_aggregation_function() {
+    // Test GROUP BY without any aggregation functions
+    // This should be treated as a regular projection since grouping without aggregation is just deduplication
+    let query = gql::query(
+        "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         RETURN z.type AS zone_type, v.color AS vehicle_color
+         GROUP BY zone_type, vehicle_color",
+        &TEST_CONFIG,
+    )
+    .unwrap();
+
+    assert_eq!(
+        query.parts[0].return_clause,
+        ProjectionClause::Item(vec![
+            UnaryExpression::alias(
+                UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
+                "zone_type".into()
+            ),
+            UnaryExpression::alias(
+                UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into()),
+                "vehicle_color".into()
+            )
+        ])
+    );
+}
+
+#[test]
+fn group_by_without_aggregation_fewer_keys_in_return() {
+    // Test GROUP BY without aggregation functions but with fewer keys in RETURN than in GROUP BY
+    // This should create a multi-part query to handle the grouping and then final projection
+    let query = gql::query(
+        "MATCH (v:Vehicle)-[:LOCATED_IN]->(z:Zone)
+         RETURN z.type AS zone_type
+         GROUP BY zone_type, v.color",
+        &TEST_CONFIG,
+    )
+    .unwrap();
+
+    assert_eq!(
+        query,
+        Query {
+            parts: vec![
+                // First part: Group by all specified keys (even though no aggregation)
+                QueryPart {
+                    match_clauses: vec![MatchClause {
+                        start: NodeMatch::with_annotation(Annotation::new("v".into()), "Vehicle".into()),
+                        path: vec![(
+                            RelationMatch::right(Annotation::empty(), vec!["LOCATED_IN".into()], vec![], None),
+                            NodeMatch::with_annotation(Annotation::new("z".into()), "Zone".into())
+                        )],
+                        optional: false,
+                    }],
+                    where_clauses: vec![],
+                    return_clause: ProjectionClause::Item(vec![
+                        UnaryExpression::alias(
+                            UnaryExpression::expression_property(UnaryExpression::ident("z"), "type".into()),
+                            "zone_type".into()
+                        ),
+                        UnaryExpression::expression_property(UnaryExpression::ident("v"), "color".into())
+                    ])
+                },
+                // Second part: Final projection with only subset of keys
+                QueryPart {
+                    match_clauses: vec![],
+                    where_clauses: vec![],
+                    return_clause: ProjectionClause::Item(vec![
+                        UnaryExpression::ident("zone_type")
+                    ])
+                }
+            ]
+        }
+    );
+}
+
 
 // LET and YIELD Tests
 // ZoneVehicleGraph Tests
